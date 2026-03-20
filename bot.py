@@ -1,11 +1,17 @@
 import os
 import logging
-from telegram import Update, Bot
-from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, ContextTypes, filters
+from telegram import Update
+from telegram.ext import (
+    ApplicationBuilder,
+    CommandHandler,
+    MessageHandler,
+    ContextTypes,
+    filters,
+)
 from yt_dlp import YoutubeDL
 
 # ----------------------------------------------------------------------
-# ตั้งค่า Logging
+# Logging configuration
 # ----------------------------------------------------------------------
 logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging.INFO
@@ -13,23 +19,26 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # ----------------------------------------------------------------------
-# ค่าคอนฟิก
+# Configuration
 # ----------------------------------------------------------------------
-# ใส่ Token ของ Bot ที่คุณได้จาก @BotFather
-TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")  # แนะนำให้ใช้ env variable
+# Bot token should be stored in an environment variable for safety.
+TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 if not TOKEN:
-    raise ValueError("กรุณากำหนดตัวแปรสภาพแวดล้อม TELEGRAM_BOT_TOKEN")
+    raise ValueError(
+        "❗️ Please set the TELEGRAM_BOT_TOKEN environment variable (you can obtain it from @BotFather)."
+    )
 
 # ----------------------------------------------------------------------
-# ฟังก์ชันดาวน์โหลด TikTok ด้วย yt-dlp
+# TikTok download helper (yt‑dlp)
 # ----------------------------------------------------------------------
 def download_tiktok(url: str) -> str:
     """
-    ดาวน์โหลดวิดีโอจาก TikTok และคืนที่อยู่ไฟล์ที่ถูกบันทึก
+    Download a TikTok video using yt‑dlp.
+    Returns the absolute path of the downloaded file.
     """
     ydl_opts = {
-        "outtmpl": "downloaded_%(id)s.%(ext)s",  # ชื่อไฟล์แบบอัตโนมัติ
-        "format": "mp4",                       # บังคับให้ได้ mp4
+        "outtmpl": "downloaded_%(id)s.%(ext)s",  # unique filename per video
+        "format": "mp4",  # force MP4 output
         "quiet": True,
         "no_warnings": True,
     }
@@ -37,52 +46,68 @@ def download_tiktok(url: str) -> str:
     with YoutubeDL(ydl_opts) as ydl:
         info = ydl.extract_info(url, download=True)
         filename = ydl.prepare_filename(info)
-    return filename
+    return os.path.abspath(filename)
+
 
 # ----------------------------------------------------------------------
-# คำสั่ง /start
+# /start command
 # ----------------------------------------------------------------------
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await update.message.reply_text(
-        "สวัสดีครับ! ส่งลิงก์ TikTok มาให้ผม แล้วผมจะดาวน์โหลดวิดีโอให้คุณ"
+        "👋 สวัสดีครับ! ส่งลิงก์ TikTok มาให้ผม แล้วผมจะดาวน์โหลดวิดีโอให้คุณ 🎥"
     )
 
+
 # ----------------------------------------------------------------------
-# จัดการข้อความ (ลิงก์ TikTok)
+# Message handler – expects a TikTok URL
 # ----------------------------------------------------------------------
-async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     text = update.message.text.strip()
-    if "tiktok.com" not in text:
-        await update.message.reply_text("กรุณาส่งลิงก์ TikTok เท่านั้น")
+
+    if "tiktok.com" not in text.lower():
+        await update.message.reply_text("⚠️ กรุณาส่งลิงก์ TikTok เท่านั้น")
         return
 
-    msg = await update.message.reply_text("กำลังดาวน์โหลดวิดีโอ... ⏳")
+    status_msg = await update.message.reply_text("🔄 กำลังดาวน์โหลดวิดีโอ...")
+
     try:
         video_path = download_tiktok(text)
-        # ส่งไฟล์กลับผู้ใช้
+
+        # Send the video back to the user
         with open(video_path, "rb") as video_file:
-            await context.bot.send_video(chat_id=update.effective_chat.id, video=video_file)
-        await msg.edit_text("ดาวน์โหลดเสร็จแล้ว ✅")
-        # ลบไฟล์ชั่วคราว
-        os.remove(video_path)
+            await context.bot.send_video(
+                chat_id=update.effective_chat.id,
+                video=video_file,
+                caption="✅ ดาวน์โหลดสำเร็จ",
+            )
+
+        await status_msg.edit_text("✅ เสร็จสิ้น")
     except Exception as e:
-        logger.exception("Error while downloading TikTok video")
-        await msg.edit_text(f"เกิดข้อผิดพลาด: {e}")
+        logger.exception("Failed to download TikTok video")
+        await status_msg.edit_text(f"❌ เกิดข้อผิดพลาด: {e}")
+    finally:
+        # Clean up the temporary file if it exists
+        if os.path.exists(video_path):
+            try:
+                os.remove(video_path)
+            except Exception:
+                pass
+
 
 # ----------------------------------------------------------------------
-# เริ่ม Application
+# Main entry point
 # ----------------------------------------------------------------------
-async def main():
+async def main() -> None:
     app = ApplicationBuilder().token(TOKEN).build()
 
     app.add_handler(CommandHandler("start", start))
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
+    app.add_handler(
+        MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message)
+    )
 
-    # เริ่ม Bot
-    await app.start()
-    logger.info("Bot กำลังทำงาน...")
-    await app.updater.start_polling()
-    await app.updater.idle()
+    logger.info("🤖 Bot started – listening for messages")
+    await app.run_polling()
+
 
 if __name__ == "__main__":
     import asyncio
